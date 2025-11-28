@@ -57,13 +57,47 @@ Use this sheet to rehearse definitions, algorithms, and the lab wiring between d
 
 - **Color-based (HSV):** threshold in HSV + morphology + contour / centroid tracking; simple but sensitive to lighting and color changes.
 - **Background subtraction:** frame differencing, MOG2 (Gaussian mixture), KNN; assumes mostly static background; fails with camera motion.
-- **Optical flow:** brightness constancy
+- **Optical flow:** brightness constancy assumption
 
-```math
-I_x u + I_y v + I_t = 0
-```
+  **Derivation:**
+  - Assume pixel intensity doesn't change: $I(x, y, t) = I(x + u, y + v, t + \Delta t)$
+  - Taylor expansion: $I(x + u, y + v, t + \Delta t) \approx I(x, y, t) + I_x u + I_y v + I_t \Delta t$
+  - Setting equal: $I_x u + I_y v + I_t = 0$
+    - $I_x, I_y$: spatial gradients (computed via Sobel/Scharr)
+    - $I_t$: temporal gradient (frame difference)
+    - $(u, v)$: flow vector (what we want to find)
 
-  - Assumes small motion and spatial coherence; Lucas–Kanade for sparse or dense flow.
+  **Lucas-Kanade method:**
+  - Single equation, two unknowns → underdetermined.
+  - Assumes constant flow in small window (spatial coherence).
+  - For window of $n$ pixels, solve overdetermined system:
+    ```math
+    \begin{bmatrix}
+    I_{x1} & I_{y1} \\
+    I_{x2} & I_{y2} \\
+    \vdots & \vdots \\
+    I_{xn} & I_{yn}
+    \end{bmatrix}
+    \begin{bmatrix}
+    u \\ v
+    \end{bmatrix}
+    =
+    \begin{bmatrix}
+    -I_{t1} \\
+    -I_{t2} \\
+    \vdots \\
+    -I_{tn}
+    \end{bmatrix}
+    ```
+  - Solution via least squares: $(\mathbf{A}^T \mathbf{A}) \mathbf{v} = \mathbf{A}^T \mathbf{b}$
+  - Requires $\mathbf{A}^T \mathbf{A}$ to be invertible (sufficient texture in window).
+
+  **Assumptions:**
+  - Small motion (linearization valid)
+  - Spatial coherence (neighboring pixels have similar flow)
+  - Brightness constancy (illumination doesn't change)
+
+  **Applications:** Sparse tracking (feature points) or dense flow (every pixel).
 - **MeanShift / CAMShift:** iteratively shift a window to the density peak (e.g., hue histogram); CAMShift also updates window size using image moments.
 - **Template matching:** cross-correlation / NCC / SSD over a search window; works for rigid appearance, fails under large deformations.
 
@@ -143,22 +177,89 @@ I_x u + I_y v + I_t = 0
   - `9.4_detection_tracking.py`: demonstrates a tracking-by-detection pipeline connecting detectors and trackers.
   - `tracker_utils.py`: shared helper functions for drawing, filtering, and bookkeeping.
 
-- **Kalman + SORT-style flow (lecture):**
-  - State vector example: $[x, y, s, r, \dot x, \dot y, \dot s]$ (center, scale, aspect ratio, velocities).
-  - Predict step:
+- **Kalman Filter (detailed mathematical formulation):**
 
+  **State representation:**
+  - State vector: $\mathbf{x}_t = [x, y, s, r, \dot{x}, \dot{y}, \dot{s}]^T$
+    - $(x, y)$: bounding box center coordinates
+    - $s$: scale (area) of bounding box
+    - $r$: aspect ratio (width/height)
+    - $(\dot{x}, \dot{y}, \dot{s})$: velocities (derivatives)
+  - State covariance: $\mathbf{P}_t$ (7×7 matrix, uncertainty in state estimate)
+
+  **Motion model (constant velocity):**
+  - State transition matrix $\mathbf{F}$:
     ```math
-    x_{\text{pred}} = F x_{\text{prev}}
+    \mathbf{F} = \begin{bmatrix}
+    1 & 0 & 0 & 0 & \Delta t & 0 & 0 \\
+    0 & 1 & 0 & 0 & 0 & \Delta t & 0 \\
+    0 & 0 & 1 & 0 & 0 & 0 & \Delta t \\
+    0 & 0 & 0 & 1 & 0 & 0 & 0 \\
+    0 & 0 & 0 & 0 & 1 & 0 & 0 \\
+    0 & 0 & 0 & 0 & 0 & 1 & 0 \\
+    0 & 0 & 0 & 0 & 0 & 0 & 1
+    \end{bmatrix}
     ```
+    where $\Delta t$ is time step (typically 1 frame).
+  - Process noise covariance $\mathbf{Q}$: models uncertainty in motion model (how much we trust constant velocity assumption).
 
-    Update step:
-
+  **Observation model:**
+  - Observation vector: $\mathbf{z}_t = [x, y, s, r]^T$ (what we directly measure from detections)
+  - Observation matrix $\mathbf{H}$ (maps state to observation):
     ```math
-    x = x_{\text{pred}} + K (z - H x_{\text{pred}})
+    \mathbf{H} = \begin{bmatrix}
+    1 & 0 & 0 & 0 & 0 & 0 & 0 \\
+    0 & 1 & 0 & 0 & 0 & 0 & 0 \\
+    0 & 0 & 1 & 0 & 0 & 0 & 0 \\
+    0 & 0 & 0 & 1 & 0 & 0 & 0
+    \end{bmatrix}
     ```
+  - Observation noise covariance $\mathbf{R}$: models uncertainty in detections (how accurate are our detections).
 
-    where $K$ is the Kalman gain.
-  - Assignment: Hungarian algorithm on an IoU-based cost matrix with gating; unmatched detections spawn tentative tracks; unmatched tracks decay and are removed after several misses.
+  **Kalman Filter steps:**
+
+  1. **Predict step:**
+     ```math
+     \mathbf{x}_{t|t-1} = \mathbf{F} \mathbf{x}_{t-1|t-1}
+     ```
+     ```math
+     \mathbf{P}_{t|t-1} = \mathbf{F} \mathbf{P}_{t-1|t-1} \mathbf{F}^T + \mathbf{Q}
+     ```
+     - Predict state and covariance forward in time using motion model.
+
+  2. **Update step (when detection is available):**
+     - Innovation (residual): $\mathbf{y}_t = \mathbf{z}_t - \mathbf{H} \mathbf{x}_{t|t-1}$
+     - Innovation covariance: $\mathbf{S}_t = \mathbf{H} \mathbf{P}_{t|t-1} \mathbf{H}^T + \mathbf{R}$
+     - Kalman gain: $\mathbf{K}_t = \mathbf{P}_{t|t-1} \mathbf{H}^T \mathbf{S}_t^{-1}$
+     - Updated state: $\mathbf{x}_{t|t} = \mathbf{x}_{t|t-1} + \mathbf{K}_t \mathbf{y}_t$
+     - Updated covariance: $\mathbf{P}_{t|t} = (\mathbf{I} - \mathbf{K}_t \mathbf{H}) \mathbf{P}_{t|t-1}$
+
+  **Intuition:**
+  - Kalman gain $\mathbf{K}$ balances prediction vs observation:
+    - High observation noise → small $\mathbf{K}$ → trust prediction more
+    - Low observation noise → large $\mathbf{K}$ → trust observation more
+  - When no detection: only predict step (track continues with predicted state, uncertainty grows).
+
+  **SORT-style flow:**
+  - Assignment: Hungarian algorithm on an IoU-based cost matrix with gating (only consider matches with IoU > threshold, e.g., 0.3).
+  - **Hungarian algorithm (Kuhn-Munkres):**
+    - **Problem:** Given a cost matrix $C$ of size $n \times m$ (tracks × detections), find the assignment that minimizes total cost
+    - **Steps (simplified):**
+      1. Subtract row minimums from each row
+      2. Subtract column minimums from each column
+      3. Cover zeros with minimum lines
+      4. If $n$ lines needed → optimal assignment found
+      5. Otherwise, adjust matrix and repeat
+    - **Time complexity:** $O(n^3)$ for $n \times n$ matrix
+    - **Cost matrix construction:**
+      - $C_{ij} = 1 - \text{IoU}(\text{track}_i, \text{detection}_j)$ if IoU > threshold
+      - $C_{ij} = \infty$ if IoU ≤ threshold (gating - impossible match)
+    - **Output:** Optimal assignment minimizing total cost (maximizing total IoU)
+  - Track states:
+    - **Tentative:** New track, needs $N$ consecutive detections (e.g., $N=3$) to become confirmed.
+    - **Confirmed:** Active track, can be matched to detections.
+    - **Lost:** Track without detection for $M$ frames (e.g., $M=30$), then deleted.
+  - Unmatched detections spawn tentative tracks; unmatched tracks age and are removed after several misses.
 
 - **Handling similarity and occlusion:**
   - Use IoU gating plus appearance embeddings (DeepSORT) for ambiguous cases.

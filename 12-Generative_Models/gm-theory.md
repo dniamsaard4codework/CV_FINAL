@@ -100,24 +100,55 @@ Why might a simple convolutional AE not be a good *generative* model, even if re
 - Likelihood (decoder): $p_\theta(x \mid z)$, e.g., Gaussian or Bernoulli with mean from a neural net.
 - True posterior: $p_\theta(z \mid x)$ is intractable → approximate with encoder $q_\phi(z \mid x)$.
 
-### 4.2 ELBO (Evidence Lower BOund)
+### 4.2 ELBO (Evidence Lower BOund) - Full Derivation
 
 We want to maximize log-likelihood:
 
 ```math
-\log p_\theta(x) = \log \int p_\theta(x, z)\, dz
+\log p_\theta(x) = \log \int p_\theta(x, z)\, dz = \log \int p_\theta(x \mid z) p(z)\, dz
 ```
 
-Introduce $q_\phi(z \mid x)$ and derive:
+The integral is intractable, so we introduce a variational distribution $q_\phi(z \mid x)$ and use Jensen's inequality.
+
+**Step 1: Introduce variational distribution**
+```math
+\log p_\theta(x) = \log \int q_\phi(z \mid x) \frac{p_\theta(x, z)}{q_\phi(z \mid x)}\, dz
+```
+
+**Step 2: Apply Jensen's inequality** (log is concave, so $\mathbb{E}[\log X] \leq \log \mathbb{E}[X]$)
+```math
+\log p_\theta(x) \geq \int q_\phi(z \mid x) \log \frac{p_\theta(x, z)}{q_\phi(z \mid x)}\, dz
+```
+
+**Step 3: Expand and rearrange**
+```math
+= \int q_\phi(z \mid x) \log \frac{p_\theta(x \mid z) p(z)}{q_\phi(z \mid x)}\, dz
+```
 
 ```math
-\log p_\theta(x)
-= \mathcal{L}_\text{ELBO}(\theta, \phi; x)
-  + D_\text{KL}\bigl(q_\phi(z \mid x)\ \lVert\ p_\theta(z \mid x)\bigr)
+= \int q_\phi(z \mid x) \left[ \log p_\theta(x \mid z) + \log p(z) - \log q_\phi(z \mid x) \right]\, dz
 ```
 
-Since KL is non-negative, ELBO is a lower bound:
+```math
+= \mathbb{E}_{z \sim q_\phi(z \mid x)} \left[ \log p_\theta(x \mid z) \right]
+  + \int q_\phi(z \mid x) \log \frac{p(z)}{q_\phi(z \mid x)}\, dz
+```
 
+```math
+= \mathbb{E}_{z \sim q_\phi(z \mid x)} \left[ \log p_\theta(x \mid z) \right]
+  - D_\text{KL}\bigl(q_\phi(z \mid x)\ \lVert\ p(z)\bigr)
+```
+
+**Step 4: Identify the gap**
+The difference between true log-likelihood and ELBO is:
+```math
+\log p_\theta(x) - \mathcal{L}_\text{ELBO}(\theta, \phi; x)
+= D_\text{KL}\bigl(q_\phi(z \mid x)\ \lVert\ p_\theta(z \mid x)\bigr)
+```
+
+Since KL divergence is non-negative, ELBO is a **lower bound** on log-likelihood.
+
+**ELBO components:**
 ```math
 \mathcal{L}_\text{ELBO}(\theta, \phi; x)
   = \mathbb{E}_{z \sim q_\phi(z \mid x)}
@@ -125,10 +156,13 @@ Since KL is non-negative, ELBO is a lower bound:
     - D_\text{KL}\bigl(q_\phi(z \mid x)\ \lVert\ p(z)\bigr)
 ```
 
-We **maximize ELBO** ≈ maximize log-likelihood.
+- **First term (reconstruction):** Encourages decoder to reconstruct $x$ well from samples $z \sim q_\phi(z \mid x)$.
+- **Second term (regularization):** Pulls $q_\phi(z \mid x)$ towards prior $p(z)$, ensuring smooth latent space.
 
-- First term: reconstruction log-likelihood.
-- Second term: KL regularizer pulling $q_\phi(z \mid x)$ towards prior $p(z)$.
+**Interpretation:**
+- Maximizing ELBO ≈ maximizing log-likelihood (when $q_\phi$ approximates true posterior well)
+- Trade-off: Better reconstruction vs smoother latent space
+- When $q_\phi(z \mid x) = p_\theta(z \mid x)$, the bound is tight (ELBO = log-likelihood)
 
 ### 4.3 Gaussian VAE and reparameterization
 
@@ -175,6 +209,14 @@ L_\text{VAE}(\theta, \phi)
 **Common issues:**
 - Blurry samples (due to simple likelihood, e.g., Gaussian with MSE).
 - KL collapse when decoder is too strong.
+- **Beta-VAE:** Weighted KL term to control disentanglement:
+  ```math
+  L_\beta = \mathbb{E}_{z \sim q_\phi(z \mid x)} [\log p_\theta(x \mid z)] - \beta D_\text{KL}(q_\phi(z \mid x) \,\|\, p(z))
+  ```
+  - $\beta > 1$: Stronger regularization → more disentangled latent space (each dimension controls independent factors)
+  - $\beta < 1$: Weaker regularization → better reconstruction but less disentanglement
+  - Trade-off: Reconstruction quality vs disentanglement
+  - **Posterior collapse:** When $\beta$ is too large, $q_\phi(z \mid x) \approx p(z)$ (encoder ignores input, latent space unused)
 
 ---
 
@@ -201,23 +243,88 @@ Original GAN objective (data distribution $p_\text{data}$):
 - $D$ tries to maximize correct classification of real vs fake.
 - $G$ tries to minimize it (fool $D$).
 
-### 5.3 Optimal discriminator and JS divergence
+### 5.3 Optimal discriminator and JS divergence - Full Derivation
 
-For fixed $G$, the optimal discriminator is:
+**Finding optimal discriminator:**
 
-```math
-D^\ast(x)
-  = \frac{p_\text{data}(x)}{p_\text{data}(x) + p_G(x)}
-```
-
-Substitute into the value function:
+For fixed $G$, we want to maximize $V(D, G)$ with respect to $D$:
 
 ```math
-V(D^\ast, G)
-  = -\log 4 + 2 \cdot \text{JS}\bigl(p_\text{data} \,\|\, p_G\bigr)
+V(D, G) = \mathbb{E}_{x \sim p_\text{data}}[\log D(x)] + \mathbb{E}_{z \sim p_z}[\log(1 - D(G(z)))]
 ```
 
-So minimizing the GAN objective wrt $G$ ≈ minimizing the Jensen–Shannon divergence between $p_\text{data}$ and $p_G$.
+```math
+= \int p_\text{data}(x) \log D(x)\, dx + \int p_G(x) \log(1 - D(x))\, dx
+```
+
+To find optimum, take derivative w.r.t. $D(x)$ and set to zero:
+
+```math
+\frac{\partial V}{\partial D(x)} = \frac{p_\text{data}(x)}{D(x)} - \frac{p_G(x)}{1 - D(x)} = 0
+```
+
+Solving:
+```math
+\frac{p_\text{data}(x)}{D^\ast(x)} = \frac{p_G(x)}{1 - D^\ast(x)}
+```
+
+```math
+p_\text{data}(x)(1 - D^\ast(x)) = p_G(x) D^\ast(x)
+```
+
+```math
+p_\text{data}(x) = D^\ast(x)(p_\text{data}(x) + p_G(x))
+```
+
+```math
+D^\ast(x) = \frac{p_\text{data}(x)}{p_\text{data}(x) + p_G(x)}
+```
+
+**Substituting optimal discriminator:**
+
+Plug $D^\ast$ back into $V(D, G)$:
+
+```math
+V(D^\ast, G) = \mathbb{E}_{x \sim p_\text{data}}\left[\log \frac{p_\text{data}(x)}{p_\text{data}(x) + p_G(x)}\right]
++ \mathbb{E}_{x \sim p_G}\left[\log \frac{p_G(x)}{p_\text{data}(x) + p_G(x)}\right]
+```
+
+```math
+= \int p_\text{data}(x) \log \frac{p_\text{data}(x)}{p_\text{data}(x) + p_G(x)}\, dx
++ \int p_G(x) \log \frac{p_G(x)}{p_\text{data}(x) + p_G(x)}\, dx
+```
+
+```math
+= \int p_\text{data}(x) \log \frac{2 p_\text{data}(x)}{2(p_\text{data}(x) + p_G(x))}\, dx
++ \int p_G(x) \log \frac{2 p_G(x)}{2(p_\text{data}(x) + p_G(x))}\, dx
+```
+
+```math
+= \int p_\text{data}(x) \log \frac{p_\text{data}(x)}{(p_\text{data}(x) + p_G(x))/2}\, dx
++ \int p_G(x) \log \frac{p_G(x)}{(p_\text{data}(x) + p_G(x))/2}\, dx
+- \log 4
+```
+
+```math
+= D_\text{KL}\left(p_\text{data} \,\middle\|\, \frac{p_\text{data} + p_G}{2}\right)
++ D_\text{KL}\left(p_G \,\middle\|\, \frac{p_\text{data} + p_G}{2}\right)
+- \log 4
+```
+
+```math
+= 2 \cdot \text{JS}(p_\text{data} \,\|\, p_G) - \log 4
+```
+
+where JS is the **Jensen-Shannon divergence**:
+```math
+\text{JS}(P \,\|\, Q) = \frac{1}{2} D_\text{KL}\left(P \,\middle\|\, \frac{P + Q}{2}\right)
++ \frac{1}{2} D_\text{KL}\left(Q \,\middle\|\, \frac{P + Q}{2}\right)
+```
+
+**Key insight:**
+- Minimizing $V(D^\ast, G)$ w.r.t. $G$ ≈ minimizing JS divergence between $p_\text{data}$ and $p_G$
+- When $p_G = p_\text{data}$, $D^\ast(x) = 1/2$ (cannot distinguish real from fake)
+- JS divergence is symmetric and bounded ($[0, \log 2]$), unlike KL divergence
 
 ### 5.4 Generator loss variants
 

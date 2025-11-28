@@ -121,7 +121,9 @@ Input: $32 \times 32 \times 3$, want $64$ output channels.
 
 ### 3.3 Receptive field
 
-Receptive field (RF) is the region in the input that affects one output neuron.
+Receptive field (RF) is the region in the input that affects one output neuron. Understanding RF is crucial for designing architectures that can capture objects of different sizes.
+
+**Definition:** The receptive field of a neuron is the size of the region in the input image that can affect its value.
 
 For a sequence of conv layers:
 
@@ -129,15 +131,30 @@ For a sequence of conv layers:
 RF_\text{new} = RF_\text{old} + (K - 1)\cdot \prod(\text{previous\_strides})
 ```
 
+**Derivation intuition:** Each new layer adds $(K-1)$ pixels to the RF, but this addition is scaled by the product of all previous strides (since stride effectively "zooms out" the view).
+
 **Worked example (RF growth):**  
 Three $3 \times 3$ conv layers, all stride 1.
 - Start: $RF_0 = 1$ (a single pixel).
-- Layer 1: $RF_1 = 1 + (3 - 1)\cdot 1 = 3$
-- Layer 2: $RF_2 = 3 + (3 - 1)\cdot 1 = 5$
-- Layer 3: $RF_3 = 5 + (3 - 1)\cdot 1 = 7$
-- After 3 layers, each neuron “sees” a $7 \times 7$ region of the input.
+- Layer 1: $RF_1 = 1 + (3 - 1)\cdot 1 = 3$ (sees $3 \times 3$ patch)
+- Layer 2: $RF_2 = 3 + (3 - 1)\cdot 1 = 5$ (sees $5 \times 5$ patch)
+- Layer 3: $RF_3 = 5 + (3 - 1)\cdot 1 = 7$ (sees $7 \times 7$ patch)
+- After 3 layers, each neuron "sees" a $7 \times 7$ region of the input.
 
-If you add stride-2 layers, the RF grows faster (multiply by stride before adding).
+**Worked example (with stride):**  
+Two $3 \times 3$ conv layers, stride 1, followed by one $3 \times 3$ conv with stride 2.
+- Start: $RF_0 = 1$
+- Layer 1 (stride 1): $RF_1 = 1 + (3-1)\cdot 1 = 3$
+- Layer 2 (stride 1): $RF_2 = 3 + (3-1)\cdot 1 = 5$
+- Layer 3 (stride 2): $RF_3 = 5 + (3-1)\cdot (1 \cdot 1 \cdot 2) = 5 + 4 = 9$
+- The stride-2 layer multiplies the effective RF growth.
+
+**Pooling and RF:** Max-pooling with kernel size $K_p$ and stride $S_p$ effectively increases RF by approximately $K_p$ and scales by $S_p$. For a $2 \times 2$ max-pool with stride 2: RF increases by 2 and is scaled by 2.
+
+**Practical importance:** 
+- Small RF → captures local features (edges, textures)
+- Large RF → captures global context (object parts, full objects)
+- Modern architectures use multiple RF sizes (e.g., Inception modules, dilated convolutions) to handle objects at different scales.
 
 ### 3.4 Pooling and downsampling
 
@@ -149,16 +166,50 @@ If you add stride-2 layers, the RF grows faster (multiply by stride before addin
 
 ### 3.5 Batch Normalization (BN)
 
-For each channel:
+Batch Normalization normalizes activations across a mini-batch, making training more stable and allowing higher learning rates.
+
+**Mathematical formulation:**
+
+For each channel $c$ in a feature map:
 
 ```math
-y = \gamma \cdot \frac{x - \mu}{\sqrt{\mathrm{var} + \varepsilon}} + \beta
+\mu_c = \frac{1}{B \cdot H \cdot W} \sum_{b=1}^{B} \sum_{i=1}^{H} \sum_{j=1}^{W} x_{b,i,j,c}
 ```
 
-Effect:
-- Reduces internal covariate shift.
-- Allows higher learning rates.
-- Acts as mild regularization.
+```math
+\sigma_c^2 = \frac{1}{B \cdot H \cdot W} \sum_{b=1}^{B} \sum_{i=1}^{H} \sum_{j=1}^{W} (x_{b,i,j,c} - \mu_c)^2
+```
+
+```math
+\hat{x}_{b,i,j,c} = \frac{x_{b,i,j,c} - \mu_c}{\sqrt{\sigma_c^2 + \varepsilon}}
+```
+
+```math
+y_{b,i,j,c} = \gamma_c \cdot \hat{x}_{b,i,j,c} + \beta_c
+```
+
+Where:
+- $B$ = batch size, $H \times W$ = spatial dimensions
+- $\mu_c, \sigma_c^2$ = mean and variance computed over batch and spatial dimensions
+- $\gamma_c, \beta_c$ = learnable scale and shift parameters (one per channel)
+- $\varepsilon$ = small constant (typically $10^{-5}$) to prevent division by zero
+
+**Key effects:**
+1. **Reduces internal covariate shift:** Normalizes the distribution of inputs to each layer, making training more stable.
+2. **Allows higher learning rates:** Smoother loss landscape enables faster convergence.
+3. **Acts as mild regularization:** The batch statistics add noise during training (different batches have different statistics).
+4. **Enables deeper networks:** Helps with gradient flow in very deep architectures.
+
+**Training vs inference:**
+- **Training:** Uses batch statistics (mean/variance computed from current batch).
+- **Inference:** Uses running averages of batch statistics (exponential moving average) to ensure consistent behavior regardless of batch size.
+
+**Placement:** Typically placed **after** convolution but **before** activation (Conv → BN → ReLU), though some architectures place it after activation.
+
+**Variants:**
+- **LayerNorm:** Normalizes across channels for each sample (useful for RNNs/transformers).
+- **GroupNorm:** Normalizes across groups of channels (useful when batch size is very small).
+- **InstanceNorm:** Normalizes across spatial dimensions for each channel (useful for style transfer).
 
 **Example exam question (calculation)**  
 Given a $64 \times 64 \times 32$ input feature map, a $3 \times 3$ conv with stride $2$ and padding $1$ outputs what spatial size?  
@@ -182,10 +233,27 @@ Answer: $(64 - 3 + 2\cdot 1)/2 + 1 = 63/2 + 1 = 31 + 1 = 32$, so $32 \times 32 \
 - **Leaky / Parametric ReLU**
   - $\text{LeakyReLU}(x) = x$ if $x > 0$, otherwise $\alpha x$ with small $\alpha$ (e.g., $0.01$).
   - Allows a small gradient for negative inputs → fewer dead neurons.
+  - **PReLU:** Learnable $\alpha$ parameter (one per channel or shared)
+
+- **GELU (Gaussian Error Linear Unit)**
+  - $\text{GELU}(x) = x \cdot \Phi(x)$ where $\Phi(x)$ is CDF of standard normal
+  - Approximation: $\text{GELU}(x) \approx 0.5x(1 + \tanh(\sqrt{2/\pi}(x + 0.044715x^3)))$
+  - **Properties:** Smooth, non-monotonic (has negative region), used in transformers (BERT, GPT)
+  - **Intuition:** Probabilistic version of ReLU - multiplies input by probability it would be kept
+
+- **ELU (Exponential Linear Unit)**
+  - $\text{ELU}(x) = x$ if $x > 0$, else $\alpha(e^x - 1)$ with $\alpha \approx 1$
+  - Smooth, negative values help push mean activations toward zero
+
+- **Swish / SiLU**
+  - $\text{Swish}(x) = x \cdot \sigma(x) = \frac{x}{1 + e^{-x}}$
+  - Self-gated activation, smooth, non-monotonic
+  - Used in EfficientNet and some modern architectures
 
 - **Softmax**
   - Turns logits into probabilities for multi-class outputs:
   - $\mathrm{softmax}(x_i) = \dfrac{e^{x_i}}{\sum_j e^{x_j}}$.
+  - **Numerical stability:** Subtract max before exp: $\mathrm{softmax}(x_i) = \dfrac{e^{x_i - \max(x)}}{\sum_j e^{x_j - \max(x)}}$
 
 ### 4.2 Convolution layers
 
@@ -212,7 +280,26 @@ Answer: $(64 - 3 + 2\cdot 1)/2 + 1 = 63/2 + 1 = 31 + 1 = 32$, so $32 \times 32 \
 - **GAP**
   - Global average pooling over full $H \times W$; reduces each channel to one value.
 
-### 4.4 Normalization and regularization
+### 4.4 Weight Initialization
+
+Proper initialization is crucial for training deep networks.
+
+- **Xavier / Glorot initialization:**
+  - For linear layer: $W \sim \mathcal{N}(0, \frac{2}{n_\text{in} + n_\text{out}})$ or uniform $U(-\sqrt{\frac{6}{n_\text{in} + n_\text{out}}}, \sqrt{\frac{6}{n_\text{in} + n_\text{out}}})$
+  - Designed for tanh/sigmoid activations
+  - Keeps variance of activations and gradients roughly constant across layers
+
+- **He / Kaiming initialization:**
+  - For ReLU: $W \sim \mathcal{N}(0, \frac{2}{n_\text{in}})$ or uniform $U(-\sqrt{\frac{6}{n_\text{in}}}, \sqrt{\frac{6}{n_\text{in}}})$
+  - Accounts for ReLU killing half the activations (variance is halved)
+  - Standard for modern CNNs with ReLU
+
+- **Why it matters:**
+  - Too small: gradients vanish, slow learning
+  - Too large: gradients explode, training unstable
+  - Proper initialization enables training very deep networks
+
+### 4.5 Normalization and regularization
 
 - **BatchNorm, LayerNorm, GroupNorm**
   - BN is most common in CNNs; LN and GN help when batch size is very small.
@@ -220,13 +307,17 @@ Answer: $(64 - 3 + 2\cdot 1)/2 + 1 = 63/2 + 1 = 31 + 1 = 32$, so $32 \times 32 \
 - **Dropout**
   - Randomly zeroes activations with probability $p$ (e.g., $0.2$–$0.5$) during training.
   - Reduces co-adaptation of neurons and overfitting.
+  - **Spatial dropout:** Drops entire feature maps (for conv layers)
+  - **Dropout placement:** Usually after activation, before or after pooling
 
 - **Weight decay (L2 regularization)**
   - Penalizes large weights; typical values: $10^{-4}$ to $5 \cdot 10^{-4}$ for CNNs.
+  - **L1 regularization:** $L_1 = \lambda \sum |w|$ (sparsity-inducing, less common in CNNs)
 
 - **Label smoothing**
   - Replaces hard one-hot labels with softened ones (e.g., $0.9$ for correct class, $0.1/(C-1)$ for others).
   - Prevents over-confident predictions and improves calibration.
+  - **Formula:** $y_\text{smooth} = (1 - \alpha) y_\text{one-hot} + \frac{\alpha}{C}$ where $\alpha$ is smoothing factor (typically $0.1$)
 
 **Example exam question (short)**  
 Why might you replace a $7 \times 7$ conv with three stacked $3 \times 3$ convs? Discuss in terms of parameters and expressiveness.
@@ -255,25 +346,60 @@ used for binary classification or per-class independent outputs.
 
 ### 5.2 Optimizers
 
-- **SGD + momentum**
-  - Classical, strong baseline.
-  - Momentum (e.g., $0.9$) accumulates a velocity in the gradient direction.
+**SGD (Stochastic Gradient Descent):**
+- Basic update: $\theta_{t+1} = \theta_t - \eta \nabla_\theta L(\theta_t)$
+- Simple but can be slow and noisy.
 
-- **Adam / AdamW**
-  - Adaptive learning rates per parameter.
-  - AdamW decouples weight decay from the adaptive step (cleaner regularization).
+**SGD + Momentum:**
+- Accumulates velocity in the gradient direction:
+  ```math
+  v_t = \mu v_{t-1} + \eta \nabla_\theta L(\theta_t)
+  ```
+  ```math
+  \theta_{t+1} = \theta_t - v_t
+  ```
+- Momentum coefficient $\mu$ (typically $0.9$ or $0.99$) controls how much past gradients influence current update.
+- **Intuition:** Like a ball rolling downhill with friction; helps escape local minima and speeds up convergence in consistent directions.
+- **Nesterov momentum:** Uses gradient at $\theta_t + \mu v_{t-1}$ instead of $\theta_t$ for better convergence.
 
-Sketch Adam update:
+**Adam (Adaptive Moment Estimation):**
+- Combines momentum with adaptive learning rates per parameter.
+- Maintains exponential moving averages of gradients ($m$) and squared gradients ($v$):
 
 ```math
-m = \beta_1 m + (1 - \beta_1) g
+m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t
 ```
+
 ```math
-v = \beta_2 v + (1 - \beta_2) g^2
+v_t = \beta_2 v_{t-1} + (1 - \beta_2) g_t^2
 ```
+
+- Bias correction (important early in training):
+
 ```math
-\theta = \theta - \text{lr} \cdot \frac{\hat m}{\sqrt{\hat v} + \varepsilon}
+\hat{m}_t = \frac{m_t}{1 - \beta_1^t}, \quad \hat{v}_t = \frac{v_t}{1 - \beta_2^t}
 ```
+
+- Update:
+
+```math
+\theta_{t+1} = \theta_t - \eta \cdot \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \varepsilon}
+```
+
+- Typical hyperparameters: $\beta_1 = 0.9$, $\beta_2 = 0.999$, $\varepsilon = 10^{-8}$
+- **Advantages:** Adaptive per-parameter learning rates, works well with sparse gradients, requires little tuning.
+- **Disadvantages:** Can converge to suboptimal solutions, memory overhead (stores $m$ and $v$ for each parameter).
+
+**AdamW:**
+- Decouples weight decay from gradient-based updates:
+  ```math
+  \theta_{t+1} = \theta_t - \eta \left( \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \varepsilon} + \lambda \theta_t \right)
+  ```
+- In standard Adam, weight decay is applied to gradients, which interacts with adaptive learning rates. AdamW applies it directly to parameters, making regularization cleaner and more effective.
+
+**Comparison:**
+- **SGD + momentum:** Best for convex problems, can generalize better, requires careful LR tuning.
+- **Adam/AdamW:** Better for non-convex problems, faster convergence, less sensitive to LR, but may not generalize as well as SGD in some cases.
 
 ### 5.3 Learning rate schedules
 
@@ -282,12 +408,45 @@ v = \beta_2 v + (1 - \beta_2) g^2
 - Linear warmup + cosine or inverse-sqrt (commonly used for deep or transformer-like models).
 - Fine-tuning: often combine a short warmup phase + slower decay to avoid damaging pretrained weights.
 
-### 5.4 Handling overfitting
+### 5.4 Data Augmentation
 
-- Increase / strengthen data augmentation (crops, flips, jitter, CutMix, MixUp).
-- Use dropout on dense layers and possibly on later conv layers.
-- Apply weight decay; reduce model capacity or use smaller classifier heads.
-- Use early stopping based on validation performance.
+Data augmentation artificially increases dataset size by applying transformations that preserve semantic meaning.
+
+**Geometric transformations:**
+- **Random crops:** Extract random patches (e.g., $224 \times 224$ from $256 \times 256$), forces model to be location-invariant.
+- **Horizontal flips:** Mirror images left-right, doubles dataset size, common for natural images.
+- **Rotations:** Small rotations ($\pm 15°$), useful for objects that can appear at any angle.
+- **Scaling:** Random resize and crop, helps with scale invariance.
+
+**Color/Photometric transformations:**
+- **Color jitter:** Random adjustments to brightness, contrast, saturation, hue.
+- **Normalization:** Subtract mean and divide by std (e.g., ImageNet: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]).
+- **Grayscale:** Randomly convert to grayscale with small probability.
+
+**Advanced augmentations:**
+- **CutMix:** Replace random rectangular region with patch from another image, label is weighted average.
+- **MixUp:** Linearly interpolate between two images and their labels: $\tilde{x} = \lambda x_i + (1-\lambda)x_j$, $\tilde{y} = \lambda y_i + (1-\lambda)y_j$.
+- **AutoAugment:** Learn optimal augmentation policies via reinforcement learning.
+- **RandAugment:** Simplified version with random selection from augmentation pool.
+
+**Domain-specific:**
+- **Medical imaging:** Intensity normalization, elastic deformations.
+- **Text recognition:** Perspective transforms, noise addition.
+- **Satellite imagery:** No flips (orientation matters), but rotations and crops are useful.
+
+### 5.5 Handling overfitting
+
+**Symptoms:** High training accuracy but low validation accuracy, large gap between train and val loss.
+
+**Strategies:**
+1. **Increase / strengthen data augmentation** (crops, flips, jitter, CutMix, MixUp).
+2. **Use dropout** on dense layers (typically $p=0.5$) and possibly on later conv layers (lower $p$, e.g., $0.2$).
+3. **Apply weight decay** (L2 regularization): typical values $10^{-4}$ to $5 \cdot 10^{-4}$ for CNNs.
+4. **Reduce model capacity:** Fewer layers, fewer channels, or use smaller classifier heads.
+5. **Use early stopping:** Monitor validation loss, stop when it stops improving.
+6. **Freeze more layers** in transfer learning to reduce trainable parameters.
+7. **Label smoothing:** Prevents overconfident predictions, improves calibration.
+8. **Ensemble methods:** Train multiple models and average predictions (reduces variance).
 
 **Example exam question (training)**  
 Your CNN achieves $99\%$ train accuracy but only $75\%$ validation accuracy. List three concrete changes you could make (with reasoning) to reduce overfitting.
@@ -320,15 +479,34 @@ You should be able to give 2–3 sentences describing each.
 - **ResNet (2015)**
   - Residual blocks with identity shortcuts: $y = F(x) + x$.
   - Solves degradation / vanishing gradient issues for very deep networks.
+  - **Key insight:** If optimal mapping is $H(x)$, let the network learn residual $F(x) = H(x) - x$ instead. This makes it easier to learn identity mapping (just set $F(x) = 0$).
+  - **Basic block:** Two $3 \times 3$ convs with BN and ReLU, plus skip connection.
+  - **Bottleneck block:** $1 \times 1$ conv (reduce) → $3 \times 3$ conv → $1 \times 1$ conv (expand), more efficient for deeper networks.
+  - **Gradient flow:** Skip connections provide direct gradient paths, preventing vanishing gradients.
   - Versions: ResNet-18/34 (basic blocks), 50/101/152 (bottleneck blocks).
+  - **Pre-activation variant (ResNet-v2):** BN and ReLU before conv, improves gradient flow further.
 
 - **DenseNet (2017)**
   - Dense connectivity: each layer receives all previous feature maps via concatenation.
   - Encourages feature reuse and reduces number of parameters for similar accuracy.
 
 - **EfficientNet (2019)**
-  - Uses a compound scaling rule to jointly scale depth, width, and resolution.
-  - Series B0–B7 with different sizes; good accuracy–efficiency trade-offs.
+  - Uses a compound scaling rule to jointly scale depth ($d$), width ($w$), and resolution ($r$).
+  - **Scaling equations:**
+    ```math
+    \text{depth}: d = \alpha^\phi
+    ```
+    ```math
+    \text{width}: w = \beta^\phi
+    ```
+    ```math
+    \text{resolution}: r = \gamma^\phi
+    ```
+    where $\alpha \cdot \beta^2 \cdot \gamma^2 \approx 2$ (constraint from FLOPs), and $\phi$ is a compound coefficient.
+  - **Key insight:** Balancing all three dimensions is more efficient than scaling only one.
+  - **Base architecture (EfficientNet-B0):** Uses mobile inverted bottleneck (MBConv) blocks with squeeze-and-excitation.
+  - Series B0–B7 with different $\phi$ values; good accuracy–efficiency trade-offs.
+  - Achieves better accuracy than ResNet/Inception with fewer parameters and FLOPs.
 
 **Example exam question (architecture comparison)**  
 Compare VGG and ResNet: how do their building blocks differ, and why does ResNet scale to much deeper networks?
@@ -376,11 +554,30 @@ Connect theory to specific lab tasks:
   - Compare performance and parameter counts to CNN-based models.
 
 - **Lab 7.2 – CNN on MNIST**
-  - Model: small 2-layer CNN + pooling + FC head.
-  - Data: normalized grayscale digits.
-  - Training loop:  
-    `zero_grad → forward → CE loss → backward → optimizer.step()`.
-  - Visualization: inspect learned filters and feature maps to see low-level edges and strokes.
+  - **Model architecture:** Small 2-layer CNN + pooling + FC head.
+    - Typical structure: Conv(32 filters, 3x3) → ReLU → MaxPool(2x2) → Conv(64 filters, 3x3) → ReLU → MaxPool(2x2) → Flatten → FC(128) → ReLU → FC(10) → Softmax
+    - Input: $28 \times 28$ grayscale images (MNIST digits)
+    - Output: 10 class logits (digits 0-9)
+  - **Data preprocessing:** 
+    - Normalize pixel values to [0,1] or use mean/std normalization
+    - Convert to tensors, create DataLoader with batch size (typically 64-128)
+  - **Training loop:**  
+    ```python
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            optimizer.zero_grad()      # Clear gradients
+            outputs = model(inputs)    # Forward pass
+            loss = criterion(outputs, labels)  # Compute loss
+            loss.backward()            # Backward pass (compute gradients)
+            optimizer.step()           # Update weights
+    ```
+  - **Loss function:** Cross-entropy loss (combines LogSoftmax + NLLLoss)
+  - **Optimizer:** Typically Adam or SGD with momentum, learning rate around $10^{-3}$ to $10^{-4}$
+  - **Visualization:** 
+    - Inspect learned filters (first conv layer) to see low-level edge detectors (horizontal, vertical, diagonal)
+    - Visualize feature maps at different layers to understand what the network learns
+    - Early layers: edges, strokes, simple patterns
+    - Later layers: more complex digit parts and shapes
 
 - **ResNet18 Fine-Tuning (take-home style)**
   - Start from ImageNet-pretrained ResNet18 backbone.

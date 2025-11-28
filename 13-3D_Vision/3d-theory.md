@@ -45,17 +45,44 @@ Representation comparison (exam-style):
 
 ## 3. Depth Estimation
 
-**Stereo vision:**
-- Two cameras with known calibration and baseline $B$.
-- Disparity $d = x_L - x_R$ for corresponding pixels.
-- Depth:
+**Stereo vision (detailed derivation):**
 
-  ```math
-  Z = \frac{f \cdot B}{d}
-  ```
+**Setup:**
+- Two cameras (left and right) with parallel optical axes
+- Baseline: $B$ (distance between camera centers)
+- Focal length: $f$ (same for both cameras, assuming identical cameras)
+- Image planes: at distance $f$ from camera centers
 
-  where $f$ is focal length.
-- Larger disparity (bigger shift) → closer object; small disparity → far object.
+**Geometry:**
+- 3D point $P = (X, Y, Z)$ projects to:
+  - Left image: $x_L = f \frac{X}{Z}$
+  - Right image: $x_R = f \frac{X - B}{Z}$ (right camera is shifted by $B$)
+
+**Disparity:**
+```math
+d = x_L - x_R = f \frac{X}{Z} - f \frac{X - B}{Z} = f \frac{B}{Z}
+```
+
+**Depth formula:**
+```math
+Z = \frac{f \cdot B}{d}
+```
+
+**Key observations:**
+- **Larger disparity** (bigger shift) → **closer object** (smaller $Z$)
+- **Small disparity** → **far object** (larger $Z$)
+- **Zero disparity** → object at infinity
+- **Disparity uncertainty:** $\Delta Z = -\frac{fB}{d^2} \Delta d$, so depth error increases quadratically with distance
+
+**Correspondence problem:**
+- Finding matching pixels between left and right images
+- **Epipolar constraint:** Corresponding point lies on epipolar line (reduces search to 1D)
+- **Methods:** Block matching, SAD (Sum of Absolute Differences), SSD, normalized cross-correlation
+- **Challenges:** Occlusions, textureless regions, repetitive patterns
+
+**Rectification:**
+- Process of aligning image planes to be parallel (simplifies correspondence search)
+- Transforms images so epipolar lines are horizontal
 
 **Monocular depth:**
 - Use CNNs (encoder–decoder) to regress depth from a single image.
@@ -108,6 +135,20 @@ Traditional operations:
 - Downsampling (e.g., voxel grid, random or Farthest Point Sampling).
 - Normal estimation, filtering, segmentation.
 - Registration: ICP (Iterative Closest Point) to align two point clouds.
+  - **ICP algorithm:**
+    - **Goal:** Find rigid transformation (rotation $R$, translation $t$) aligning source point cloud to target
+    - **Steps (iterative):**
+      1. For each point in source, find closest point in target
+      2. Compute optimal $R, t$ minimizing: $\sum_i \|R \mathbf{p}_i + \mathbf{t} - \mathbf{q}_i\|^2$ where $\mathbf{q}_i$ is closest point
+      3. Apply transformation to source
+      4. Repeat until convergence (change in transformation < threshold)
+    - **Solution for step 2:**
+      - Center both point clouds: $\bar{\mathbf{p}} = \frac{1}{n}\sum \mathbf{p}_i$, $\bar{\mathbf{q}} = \frac{1}{n}\sum \mathbf{q}_i$
+      - Compute cross-covariance: $H = \sum_i (\mathbf{p}_i - \bar{\mathbf{p}})(\mathbf{q}_i - \bar{\mathbf{q}})^T$
+      - SVD: $H = U \Sigma V^T$, then $R = V U^T$ (ensuring $\det(R) = 1$)
+      - Translation: $\mathbf{t} = \bar{\mathbf{q}} - R \bar{\mathbf{p}}$
+    - **Limitations:** Requires good initialization, can get stuck in local minima, sensitive to outliers
+    - **Variants:** Point-to-plane ICP (uses normals), robust ICP (handles outliers)
 
 Challenges for CNNs:
 - No regular grid and varying point count, so standard 2D/3D convolutions are not directly applicable.
@@ -171,23 +212,73 @@ Mesh operations:
 Rendering pipeline:
 - 3D mesh / point cloud → model and world transform → camera / view transform → projection (perspective or orthographic) → rasterization → shading → 2D image.
 
-Pinhole camera model:
-- Perspective projection (simplified):
+**Pinhole camera model (detailed):**
 
-  ```math
-  x = \frac{f X}{Z}, \quad y = \frac{f Y}{Z}
-  ```
+**Coordinate systems:**
+1. **World coordinates:** $(X_w, Y_w, Z_w)$ - 3D scene points
+2. **Camera coordinates:** $(X_c, Y_c, Z_c)$ - after world-to-camera transform
+3. **Image coordinates:** $(x, y)$ - 2D projection
 
-- Intrinsics matrix:
+**Perspective projection:**
+- Camera center at origin, image plane at $Z = f$
+- Similar triangles: $\frac{x}{f} = \frac{X_c}{Z_c}$, $\frac{y}{f} = \frac{Y_c}{Z_c}$
 
-  ```math
-  K =
-  \begin{bmatrix}
-  f_x & 0   & c_x \\
-  0   & f_y & c_y \\
-  0   & 0   & 1
-  \end{bmatrix}
-  ```
+```math
+x = f \frac{X_c}{Z_c}, \quad y = f \frac{Y_c}{Z_c}
+```
+
+**Homogeneous coordinates:**
+```math
+\begin{bmatrix}
+x \\ y \\ 1
+\end{bmatrix}
+\propto
+\begin{bmatrix}
+f & 0 & 0 & 0 \\
+0 & f & 0 & 0 \\
+0 & 0 & 1 & 0
+\end{bmatrix}
+\begin{bmatrix}
+X_c \\ Y_c \\ Z_c \\ 1
+\end{bmatrix}
+```
+
+**Camera intrinsics matrix $K$:**
+Accounts for:
+- Focal length: $f_x, f_y$ (may differ if pixels are not square)
+- Principal point: $(c_x, c_y)$ (image center, accounting for optical axis offset)
+- Skew: $s$ (usually 0 for modern cameras)
+
+```math
+K =
+\begin{bmatrix}
+f_x & s   & c_x \\
+0   & f_y & c_y \\
+0   & 0   & 1
+\end{bmatrix}
+```
+
+**Full projection:**
+```math
+\begin{bmatrix}
+u \\ v \\ 1
+\end{bmatrix}
+= K
+\begin{bmatrix}
+X_c \\ Y_c \\ Z_c
+\end{bmatrix}
+= K [R | \mathbf{t}]
+\begin{bmatrix}
+X_w \\ Y_w \\ Z_w \\ 1
+\end{bmatrix}
+```
+
+where $R, \mathbf{t}$ are rotation and translation (extrinsics).
+
+**Distortion:**
+- **Radial distortion:** $r' = r(1 + k_1 r^2 + k_2 r^4 + k_3 r^6)$
+- **Tangential distortion:** $(x', y') = (x, y) + [2p_1 xy + p_2(r^2 + 2x^2), p_1(r^2 + 2y^2) + 2p_2 xy]$
+- Usually corrected via calibration before projection
 
 Shading (Phong model):
 
@@ -217,19 +308,53 @@ Practical issues:
   - Output: color $c$ and volume density $\sigma$.
 - Use positional encoding for $x$ and $d$ to capture high-frequency details.
 
-Volume rendering:
-- For a ray $r$, discrete approximation of color:
+**Volume rendering (detailed derivation):**
 
-  ```math
-  \hat C(r) = \sum_i T_i \bigl(1 - e^{-\sigma_i \delta_i}\bigr) c_i
-  ```
-  ```math
-  T_i = \exp\left(-\sum_{j < i} \sigma_j \delta_j\right)
-  ```
+**Continuous formulation:**
+For a ray $\mathbf{r}(t) = \mathbf{o} + t \mathbf{d}$ (origin $\mathbf{o}$, direction $\mathbf{d}$), the expected color is:
 
-  $T_i$ is the accumulated transmittance.
+```math
+C(\mathbf{r}) = \int_{t_n}^{t_f} T(t) \sigma(\mathbf{r}(t)) \mathbf{c}(\mathbf{r}(t), \mathbf{d})\, dt
+```
 
-Intuition: integrate emitted color along the ray, weighted by how much light is not absorbed before each sample.
+where:
+- $T(t) = \exp\left(-\int_{t_n}^{t} \sigma(\mathbf{r}(s))\, ds\right)$ is **transmittance** (probability ray travels from $t_n$ to $t$ without hitting anything)
+- $\sigma(\mathbf{r}(t))$ is **volume density** (differential probability of termination per unit distance)
+- $\mathbf{c}(\mathbf{r}(t), \mathbf{d})$ is **emitted color** (view-dependent)
+
+**Discrete approximation:**
+Partition ray into $N$ segments $[t_i, t_{i+1}]$ with $\delta_i = t_{i+1} - t_i$:
+
+```math
+\hat{C}(\mathbf{r}) = \sum_{i=1}^{N} T_i \bigl(1 - e^{-\sigma_i \delta_i}\bigr) \mathbf{c}_i
+```
+
+where:
+```math
+T_i = \exp\left(-\sum_{j=1}^{i-1} \sigma_j \delta_j\right)
+```
+
+**Interpretation:**
+- $1 - e^{-\sigma_i \delta_i}$: probability of termination in segment $i$ (opacity)
+- $T_i$: probability ray reaches segment $i$ (transmittance)
+- Product: probability ray terminates in segment $i$ and emits color $\mathbf{c}_i$
+- Sum: expected color (alpha compositing)
+
+**Alpha compositing:**
+```math
+\alpha_i = 1 - e^{-\sigma_i \delta_i}
+```
+
+```math
+\hat{C}(\mathbf{r}) = \sum_{i=1}^{N} T_i \alpha_i \mathbf{c}_i
+```
+
+where $T_i = \prod_{j=1}^{i-1} (1 - \alpha_j)$ (standard alpha blending).
+
+**Hierarchical sampling:**
+- **Coarse network:** Samples uniformly, predicts density
+- **Fine network:** Samples more densely in regions with high density (importance sampling)
+- Reduces number of samples needed while maintaining quality
 
 Training:
 - Camera poses are known; for each ray, predict $\hat C(r)$ and minimize difference to ground-truth pixel color.
